@@ -1,0 +1,304 @@
+Kubernetes & PKI's
+20 Feb 2019
+
+Sandro Mello
+System Engineer, TOTVS
+@sandromello
+https://github.com/sandromello
+
+* Introdução
+
+- Visão geral sobre PKI's
+- Como administrar os Certificados de Autoridade em um cluster
+- Implementação / Uso
+- API de emissão de certificados
+- Demo
+
+* Visão Geral
+
+Infra Estrutura de Chaves Públicas (PKI) é um termo geral que abrange tudo que está relacionado a certificados digitais e gerenciamento de criptografia de chaves públicas.
+
+* Criptografia de Chave Pública
+
+Criptografia de chaves públicas envolvem 1 par de chaves: uma _chave_pública_ e uma _chave_privada_. A chave pública pode ser compartilhada e a privada deve ser mantida em sigilo.
+
+Eles permitem fazer duas coisas:
+
+- _Criptografar_ a mensagem com a _chave_pública_, descriptografar com a _chave_privada_
+- _Assinar_ uma mensagem com a _chave_privada_, _verificar_ a assinatura com a _chave_pública_
+
+* MAC e Assinaturas
+
+MAC (*Message*Authentication*Code*) é uma porção de dados que é usada para verificar qual entidade enviou uma mensagem e garantir que a mesma não foi modificada.
+Basicamente é utilizada um segredo compartilhado com uma mensagem através de uma função _hash_ (como HMAC, SHA).
+
+Uma assinatura é conceitualmente similar ao MAC, mas ao invés de usar segredos compartilhados utilizam um par de chaves (pública/privado). Funcionam como assinaturas no mundo real, elas autenticam as mensagens, basicamente:
+
+- Ao assinar uma mensagem, a assinatura é calculada a partir de uma mensagem e uma chave privada
+- Usando a chave pública e a mensagem original, qualquer um pode verificar se a assinatura foi calculada a partir de uma chave privada
+
+* Certificados e Formatos
+
+São estrutura de dados que contém uma chave pública e um nome (Subject) e são associadas por uma assinatura que identifica o dono da chave pública (Issuer).
+
+Quem assina esses certificados é chamado de _Certificado_de_Autoridade_ (CA). Esta é geralmente uma organização como Comodo ou Let's Encrypt.
+
+Uma CA pode ser assinada por outra CA e assim por diante. O último certificado na raiz é chamado de _root_certificate_.
+
+* Emissão de Certificados
+
+Para obter um certificado válido assinado por uma CA:
+
+1) O cliente deve enviar um _Certificate_Signing_Request_ (CSR) para a CA, isso inclue a chave pública do cliente assim como as informações do certificado (Nome, Organização, Domínio)
+2) Se tudo ocorrer bem a CA gera um certificado a partir da CSR
+
+Nos casos mais simples a CA apenas faz uma validação de domínio - _Domain_Validation_ (DA), checando um registro de DNS.
+
+* Exemplo de como TLS funciona
+
+.image how-ssl-works.png
+
+* Resumindo
+
+- Com uma chave pública podemos verificar assinaturas de uma entidade e enviar mensagens criptografas
+- Com uma chave privada podemos assinar mensagens, e descriptografar mensagens
+- Certificados identificam donos (issuers) das chaves públicas
+- Nós confiamos no certificado pois confiamos na CA que a assinou
+
+* Kubernetes CA
+
+Todo cluster pode possuir um ou mais certificados de autoridade (CA).
+
+Como administrador, você é responsável por:
+
+- Criar o par de chaves de todas CA's que serão utilizadas
+- Distribuir o par de chaves (CA) para os servidores onde o control plane reside (especificamente kube-apiserver e kube-controller-manager)
+- Distribuir certificados assinados pela CA para os componentes do Kubernetes se comunicarem com o api server. (Exemplos: kubelet, kube-proxy)
+
+* Tipos de configuração
+
+- Utilizar uma CA por cluster
+- Utilizar uma CA global
+- Diferentes CA para diferentes serviços dentro de um cluster
+
+* Autenticação
+
+- A opção `--client-ca-file=` no api server habilita autenticação de certificados x509
+- Usuários são mapeados a partir do "Common Name" (CN) do certificado
+- Grupos são mapeados a partir do "Organization" do certificado
+
+O comando abaixo irá criar um CSR para o usuário *bob* que irá pertencer aos grupos *view* e *developer*:
+
+	$ openssl req -new -key bob.pem -out bob-csr.pem -subj "/CN=bob/O=view/O=developer"
+
+* Certificado Cliente - Exemplo
+
+	Certificate:
+		Data:
+			Version: 3 (0x2)
+			Serial Number: 8969237717844588629 (0x7c79222eee297855)
+		Signature Algorithm: sha256WithRSAEncryption
+			Issuer: CN=kubernetes
+			Validity
+				Not Before: Jan 22 14:57:56 2019 GMT
+				Not After : Feb  6 15:01:44 2020 GMT
+			Subject: O=view, O=developer, CN=bob
+			Subject Public Key Info:
+				Public Key Algorithm: rsaEncryption
+					Public-Key: (2048 bit)
+					Modulus:
+						00:b5:98:7d:e4:b9:(...)
+					Exponent: 65537 (0x10001)
+			X509v3 extensions:
+				X509v3 Key Usage: critical
+					Digital Signature, Key Encipherment
+				X509v3 Extended Key Usage:
+					TLS Web Client Authentication
+				X509v3 Authority Key Identifier:
+					keyid:D0:19:02:CA:D9:2B:45:CC:6E:E7:CA:C9:CB:A8:E2:EF:41:95:98:38
+
+* Autorização
+
+Da permissão para o usuário "bob" ler pods no namespace "default"
+
+	kind: RoleBinding
+	apiVersion: rbac.authorization.k8s.io/v1
+	metadata:
+	  name: read-pods
+	  namespace: default
+	subjects:
+	- kind: User
+	  name: bob
+	  apiGroup: rbac.authorization.k8s.io
+	roleRef:
+	  kind: Role
+	  name: pod-reader
+	  apiGroup: rbac.authorization.k8s.io
+
+* Kubeconfig c/certificado - Exemplo
+
+	apiVersion: v1
+	clusters:
+	- cluster:
+		certificate-authority: /home/user/.minikube/ca.crt
+		server: https://minikube.tld:8443
+	name: minikube
+	contexts:
+	- context:
+		cluster: minikube
+		user: minikube
+	name: minikube
+	current-context: minikube
+	kind: Config
+	preferences: {}
+	users:
+	- name: minikube
+	user:
+		client-certificate: /home/user/.minikube/client.crt
+		client-key: /home/user/.minikube/client.key
+
+* Service Account Tokens
+
+- Tokens de serviço são gerados a partir de uma chave privada distinta.
+
+Por padrão, todo pod possui um volume montado em `/var/run/secrets/kubernetes.io/serviceaccount` contendo:
+
+- ca.crt - Chave Pública do Certificado de Autoridade
+- token - Token JWT associado a conta de serviço _default_ do namespace
+- namespace - nome do namespace no qual o POD esta executando
+
+O token pode ser utilizado para se autenticar no api-server. Cada token é gerado a partir de uma chave privada configurada no _kube_controller_manager_ pela opção: `service-account-private-key-file`
+
+* certificates.k8s.io API
+
+Aplicações podem emitir Solicitação de Assinatura de Certificado (CSR) usando a api `certificates.k8s.io` através de um protocolo similar ao ACME Draft.
+
+Através dessa API é possível:
+
+- Uso da CA como uma fonte de confiança entre suas aplicações;
+- Automação da administração de uso de certificados;
+- Gerar certificados com escopos definidos com múltiplas funcionalidades;
+- Distribuir certificados para administração do cluster.*
+
+Um pré-requisito para permitir que os certificados sejam assinados pela CA é configurar sua respectiva chave privada no kube-controller-manager:
+
+*--cluster-signing-key-file=/path/to/ca/private-key*
+
+*** Certificados não podem ser revogados
+
+* Escopo das Chaves
+
+	signing
+	digital signature
+	content commitment
+	key encipherment
+	key agreement
+	data encipherment
+	cert sign
+	crl sign
+	encipher only
+	decipher only
+	any
+	server auth
+	client auth
+	code signing
+	email protection
+	s/mime
+	ipsec end system
+	ipsec tunnel
+	ipsec user
+	timestamping
+	ocsp signing
+	microsoft sgc
+	netscape sgc
+
+
+* Quem utiliza?
+
+- Node TLS bootstrap
+
+Simplificação do processo de configuração do Kubelet para obter credenciais validas de forma automatizada utilizando a API de CSR.
+
+- Teleport
+
+Proxy que agrega a administração de clusters Kubernetes
+
+- Você?
+
+* Criando um CSR
+
+	privateKey, _ := certutil.NewPrivateKey()
+	dnsName := os.ExpandEnv("myapp.$POD_NAMESPACE.$CLUSTER_DNS")
+	subject := &pkix.Name{CommonName: dnsName}
+	csrData, _ := certutil.MakeCSR(privateKey, subject, []string{dnsName, "localhost"}, nil)
+	csrObj := &certificate.CertificateSigningRequest{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "myapp-csr",
+			Labels: map[string]string{"app": "auto-tls"},
+		},
+		Spec: certificate.CertificateSigningRequestSpec{
+			Request: csrData,
+			Usages: []certificate.KeyUsage{
+				certificate.UsageDigitalSignature,
+				certificate.UsageKeyEncipherment,
+				certificate.UsageServerAuth,
+			},
+		},
+	}
+	kubecli.CertificatesV1beta1().CertificateSigningRequests().Create(csrObj)
+
+* Aprovando o CSR
+
+	$ kubectl certificate approve myapp-csr
+
+Note que o processo é manual, é preciso desenvolver um programa que aprove os certificados (CSR).
+
+* Obtendo o Certificado Assinado
+
+	// use a chave privada utilizada para gerar o CSR, convertendo-a para o formato PEM
+	pemPK, _ := certutil.MarshalPrivateKeyToPEM(privateKey)
+	csr, _ := kubecli.CertificatesV1beta1().
+		CertificateSigningRequests().
+		Get("myapp-csr", metav1.GetOptions{})
+	if len(csr.Status.Certificate) > 0 {
+		block, _ := pem.Decode(item.Status.Certificate)
+		crt, _ := x509.ParseCertificate(block.Bytes)
+		// verifique se o certificado ainda é válido - não foi expirado
+		check := time.Now().UTC()
+		if check.After(crt.NotBefore) && check.Before(crt.NotAfter) {
+			ioutil.WriteFile("/tmp/myapp.crt", csr.Status.Certificate, 0644)
+			ioutil.WriteFile("/tmp/myapp.key", pemPK, 0644)
+		}
+	}
+
+* Demo
+
+\(ツ)/
+
+* Dicas
+
+- Evite gerar certificados de autenticação de longa duração
+- Evite o uso de certificados intermediários
+- Caso opte pela utilização de uma CA para diversos clusters, leve em consideração os riscos de segurança
+- Retrinja acesso aos servidores que tenham a chave privada do certificado de autoridade
+- Cuidado com a expiração dos certificados
+- A recriação de chaves pode deixar as aplicações que utilizam credenciais internas incosistentes
+
+* Projetos Relacionados
+
+.link https://www.vaultproject.io/docs/secrets/pki/index.html Vault PKI
+.link https://github.com/gravitational/teleport Teleport
+.link https://github.com/smallstep smallstep
+
+* Referências
+
+.link https://rehn.me/posts/pki-for-busy-people.html PKI for Busy people
+.link https://smallstep.com/blog/everything-pki.html Everything About PKI
+.link https://security.stackexchange.com/questions/20803/how-does-ssl-tls-work/20847#20847 How TLS works
+.link https://jvns.ca/blog/2017/08/05/how-kubernetes-certificates-work/ How Kubernetes Certificates Work
+.link https://datatracker.ietf.org/doc/draft-ietf-acme-acme/ Acme Draft
+.link https://kubernetes.io/docs/reference/command-line-tools-reference/kubelet-tls-bootstrapping/ Kubelet TLS Bootstraping
+.link https://kubernetes.io/docs/reference/access-authn-authz/authentication/ Kubernetes Authentication Process
+.link https://kubernetes.io/docs/tasks/tls/managing-tls-in-a-cluster/ Managing TLS in a Cluster
+.link https://kubernetes.io/docs/reference/access-authn-authz/service-accounts-admin/ Managing Service Accounts
+.link https://github.com/sandromello/auto-tls-example Demo
